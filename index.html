@@ -376,8 +376,21 @@
 <div id="viewReisekosten" style="display:none;">
   <div class="rk-summary" id="rkSummary"></div>
 
+  <div class="rk-form" id="rkCarsPanel" style="display:none;">
+    <h2 style="margin:0 0 10px; font-size:15px; font-weight:500;">Kennzeichen verwalten</h2>
+    <div id="rkCarsList"></div>
+    <div class="rk-form-actions">
+      <input type="text" id="rkNewCar" placeholder="Neues Kennzeichen, z.B. FN-AB 123" style="flex:1; min-width:180px;" onkeydown="if(event.key==='Enter'){rkAddCar();}">
+      <button class="primary" style="flex:none; padding:10px 18px;" onclick="rkAddCar()">Hinzufügen</button>
+      <button class="secondary" style="flex:none; padding:10px 18px;" onclick="rkToggleCarsPanel()">Schließen</button>
+    </div>
+  </div>
+
   <div class="rk-form">
-    <h2 style="margin:0 0 4px; font-size:15px; font-weight:500;" id="rkFormTitle">Fahrt erfassen</h2>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
+      <h2 style="margin:0; font-size:15px; font-weight:500;" id="rkFormTitle">Fahrt erfassen</h2>
+      <button class="secondary" style="flex:none; padding:7px 14px; font-size:12.5px;" onclick="rkToggleCarsPanel()">Kennzeichen verwalten</button>
+    </div>
     <div class="rk-form-grid">
       <div>
         <label>Datum</label>
@@ -563,14 +576,10 @@
     </fieldset>
 
     <fieldset>
-      <legend>Reisekosten – Autos &amp; Kilometerpauschale</legend>
-      <label>Name Auto 1</label>
-      <input type="text" id="cfgRkAuto1" placeholder="z.B. FN-KA 888">
-      <label>Name Auto 2</label>
-      <input type="text" id="cfgRkAuto2" placeholder="z.B. XX-XX XYZ">
+      <legend>Reisekosten – Kilometerpauschale</legend>
       <label>Kilometerpauschale (€/km)</label>
       <input type="text" id="cfgRkRate" placeholder="0.30">
-      <div class="hint">Wird zur automatischen Berechnung des Erstattungsbetrags je Fahrt verwendet.</div>
+      <div class="hint">Wird zur automatischen Berechnung des Erstattungsbetrags je Fahrt verwendet. Kennzeichen verwaltest du direkt in der Kachel Reisekosten.</div>
     </fieldset>
 
     <div class="btn-row">
@@ -618,8 +627,6 @@ const LS_GEMINI_KEY = 'hersteller_app_gemini_key';
 const LS_GEMINI_MODEL = 'hersteller_app_gemini_model';
 const LS_NC_CAD_LINK = 'hersteller_app_nc_cad_link';
 const LS_NC_CAD_PASSWORD = 'hersteller_app_nc_cad_password';
-const LS_RK_AUTO1 = 'hersteller_app_rk_auto1';
-const LS_RK_AUTO2 = 'hersteller_app_rk_auto2';
 const LS_RK_RATE = 'hersteller_app_rk_rate';
 
 /* ---------- sample data (aus der ursprünglichen Excel-Tabelle) ---------- */
@@ -782,8 +789,6 @@ function loadSettingsIntoForm(){
   document.getElementById('cfgGeminiModel').value = localStorage.getItem(LS_GEMINI_MODEL) || 'gemini-flash-latest';
   document.getElementById('cfgNcCadLink').value = localStorage.getItem(LS_NC_CAD_LINK) || '';
   document.getElementById('cfgNcCadPassword').value = localStorage.getItem(LS_NC_CAD_PASSWORD) || '';
-  document.getElementById('cfgRkAuto1').value = localStorage.getItem(LS_RK_AUTO1) || 'FN-KA 888';
-  document.getElementById('cfgRkAuto2').value = localStorage.getItem(LS_RK_AUTO2) || 'Auto 2';
   document.getElementById('cfgRkRate').value = localStorage.getItem(LS_RK_RATE) || '0.30';
 }
 
@@ -807,6 +812,7 @@ function tryInitFirebase(){
     statusEl.textContent = 'Verbunden – Änderungen werden geräteübergreifend synchronisiert';
     statusEl.className = 'status ok';
     listenToEntries();
+    listenToRkCars();
     listenToRk();
   }catch(e){
     console.error(e);
@@ -829,9 +835,93 @@ function listenToEntries(){
 }
 
 /* ---------- Reisekosten (Fahrtkosten für 2 Autos) ---------- */
+const RK_DEFAULT_CARS = [
+  { id:'auto1', name:'FN-KA 888' },
+  { id:'auto2', name:'BO-ZQ 1242' }
+];
+let rkCars = RK_DEFAULT_CARS.map(c => ({...c}));
+
 function rkCarName(key){
-  if(key === 'auto2') return localStorage.getItem(LS_RK_AUTO2) || 'Auto 2';
-  return localStorage.getItem(LS_RK_AUTO1) || 'FN-KA 888';
+  const c = rkCars.find(x => x.id === key);
+  return c ? c.name : (key || '(unbekannt)');
+}
+
+function listenToRkCars(){
+  db.collection('einstellungen').doc('reisekosten').onSnapshot((doc) => {
+    const data = doc.exists ? doc.data() : null;
+    if(data && Array.isArray(data.autos) && data.autos.length){
+      rkCars = data.autos;
+    } else {
+      rkCars = RK_DEFAULT_CARS.map(c => ({...c}));
+    }
+    rkFillAutoSelect();
+    rkRenderCarsPanel();
+    renderRk();
+  }, (err) => {
+    console.error(err);
+    showToast('Fehler beim Laden der Kennzeichen: ' + err.message);
+  });
+}
+
+async function rkSaveCars(newCars){
+  await db.collection('einstellungen').doc('reisekosten').set({ autos: newCars });
+}
+
+function rkToggleCarsPanel(){
+  const p = document.getElementById('rkCarsPanel');
+  p.style.display = (p.style.display === 'none') ? '' : 'none';
+  if(p.style.display !== 'none'){ rkRenderCarsPanel(); }
+}
+
+function rkRenderCarsPanel(){
+  const list = document.getElementById('rkCarsList');
+  if(!list) return;
+  list.innerHTML = rkCars.map(c => `
+    <div class="rk-row" style="display:flex; align-items:center; gap:10px;">
+      <span style="flex:1; font-size:14px;">${escapeHtml(c.name)}</span>
+      <span class="rk-actions">
+        <button onclick="rkRenameCar('${c.id}')" title="Umbenennen">✎</button>
+        <button onclick="rkDeleteCar('${c.id}')" title="Löschen">🗑</button>
+      </span>
+    </div>`).join('');
+}
+
+async function rkAddCar(){
+  if(!firebaseReady){ showToast('Bitte zuerst Firebase einrichten.'); return; }
+  const input = document.getElementById('rkNewCar');
+  const name = input.value.trim();
+  if(!name) return;
+  if(rkCars.some(c => c.name.toLowerCase() === name.toLowerCase())){ showToast('Dieses Kennzeichen gibt es schon.'); return; }
+  const id = 'auto' + Date.now();
+  try{
+    await rkSaveCars([...rkCars, { id, name }]);
+    input.value = '';
+    showToast('Kennzeichen hinzugefügt.');
+  }catch(e){ showToast('Fehler: ' + e.message); }
+}
+
+async function rkRenameCar(id){
+  const c = rkCars.find(x => x.id === id);
+  if(!c) return;
+  const name = prompt('Neues Kennzeichen:', c.name);
+  if(!name || !name.trim()) return;
+  try{
+    await rkSaveCars(rkCars.map(x => x.id === id ? { ...x, name: name.trim() } : x));
+  }catch(e){ showToast('Fehler: ' + e.message); }
+}
+
+async function rkDeleteCar(id){
+  const c = rkCars.find(x => x.id === id);
+  if(!c) return;
+  if(rkCars.length <= 1){ showToast('Mindestens ein Kennzeichen muss bleiben.'); return; }
+  const used = rkEntries.filter(e => e.auto === id).length;
+  const msg = used
+    ? `„${c.name}" wird in ${used} Fahrt(en) verwendet. Beim Löschen erscheint dort statt des Kennzeichens nur noch die interne Kennung. Trotzdem löschen?`
+    : `Kennzeichen „${c.name}" löschen?`;
+  if(!confirm(msg)) return;
+  try{
+    await rkSaveCars(rkCars.filter(x => x.id !== id));
+  }catch(e){ showToast('Fehler: ' + e.message); }
 }
 function rkRateValue(){
   const v = parseFloat((localStorage.getItem(LS_RK_RATE) || '0.30').replace(',', '.'));
@@ -843,9 +933,9 @@ function rkFormatEUR(v){
 function rkFillAutoSelect(){
   const sel = document.getElementById('rkAuto');
   if(!sel) return;
-  const current = sel.value || 'auto1';
-  sel.innerHTML = `<option value="auto1">${escapeHtml(rkCarName('auto1'))}</option><option value="auto2">${escapeHtml(rkCarName('auto2'))}</option>`;
-  sel.value = current;
+  const current = sel.value || (rkCars[0] && rkCars[0].id);
+  sel.innerHTML = rkCars.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
+  if(rkCars.some(c => c.id === current)){ sel.value = current; }
 }
 function rkUpdatePreview(){
   const kmEl = document.getElementById('rkKm');
@@ -883,26 +973,23 @@ function updateRkSuggestions(){
 function renderRk(){
   const summaryEl = document.getElementById('rkSummary');
   if(summaryEl){
-    const totals = { auto1:{km:0, betrag:0}, auto2:{km:0, betrag:0} };
+    const totals = {};
+    rkCars.forEach(c => { totals[c.id] = { km:0, betrag:0 }; });
     let allKm = 0, allBetrag = 0;
     rkEntries.forEach(e => {
-      const key = e.auto === 'auto2' ? 'auto2' : 'auto1';
-      totals[key].km += (e.km || 0);
-      totals[key].betrag += (e.betrag || 0);
+      if(!totals[e.auto]) totals[e.auto] = { km:0, betrag:0 };
+      totals[e.auto].km += (e.km || 0);
+      totals[e.auto].betrag += (e.betrag || 0);
       allKm += (e.km || 0);
       allBetrag += (e.betrag || 0);
     });
-    summaryEl.innerHTML = `
+    const carCards = Object.keys(totals).map(id => `
       <div class="rk-summary-card">
-        <div class="label">${escapeHtml(rkCarName('auto1'))}</div>
-        <div class="value">${totals.auto1.km.toLocaleString('de-DE')} km</div>
-        <div class="sub">${rkFormatEUR(totals.auto1.betrag)}</div>
-      </div>
-      <div class="rk-summary-card">
-        <div class="label">${escapeHtml(rkCarName('auto2'))}</div>
-        <div class="value">${totals.auto2.km.toLocaleString('de-DE')} km</div>
-        <div class="sub">${rkFormatEUR(totals.auto2.betrag)}</div>
-      </div>
+        <div class="label">${escapeHtml(rkCarName(id))}</div>
+        <div class="value">${totals[id].km.toLocaleString('de-DE')} km</div>
+        <div class="sub">${rkFormatEUR(totals[id].betrag)}</div>
+      </div>`).join('');
+    summaryEl.innerHTML = carCards + `
       <div class="rk-summary-card">
         <div class="label">Gesamt</div>
         <div class="value">${allKm.toLocaleString('de-DE')} km</div>
@@ -1808,11 +1895,7 @@ function saveSettings(){
   if(ncCadPassword){ localStorage.setItem(LS_NC_CAD_PASSWORD, ncCadPassword); }
   else { localStorage.removeItem(LS_NC_CAD_PASSWORD); }
 
-  const rkAuto1 = document.getElementById('cfgRkAuto1').value.trim() || 'Auto 1';
-  const rkAuto2 = document.getElementById('cfgRkAuto2').value.trim() || 'Auto 2';
   const rkRateVal = document.getElementById('cfgRkRate').value.trim() || '0.30';
-  localStorage.setItem(LS_RK_AUTO1, rkAuto1);
-  localStorage.setItem(LS_RK_AUTO2, rkAuto2);
   localStorage.setItem(LS_RK_RATE, rkRateVal);
 
   document.getElementById('settingsMsg').textContent = 'Gespeichert. Verbinde …';
