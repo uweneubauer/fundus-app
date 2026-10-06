@@ -589,7 +589,30 @@
     <div class="hint" id="settingsMsg"></div>
 
     <div class="divider"></div>
+    <div class="hint" id="settingsUser" style="margin:0 0 8px;"></div>
+    <button class="secondary" style="width:100%; margin-bottom:10px;" onclick="doLogout()">Abmelden</button>
     <button class="secondary" style="width:100%;" onclick="importSampleData()">Beispieldaten laden (4 bereits erfasste Hersteller)</button>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div class="overlay" id="loginOverlay" style="z-index:45; background:var(--bg-soft);">
+  <div class="sheet" style="max-width:380px;">
+    <h2>Anmelden</h2>
+    <label>E-Mail</label>
+    <input type="text" id="loginEmail" autocomplete="username" inputmode="email" autocapitalize="off">
+    <label>Passwort</label>
+    <input type="password" id="loginPassword" autocomplete="current-password"
+           style="width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--border); font-size:14.5px; font-family:inherit; background:var(--bg-soft); color:var(--ink);"
+           onkeydown="if(event.key==='Enter'){doLogin();}">
+    <div class="hint warn" id="loginMsg"></div>
+    <div class="btn-row">
+      <button class="primary" id="loginBtn" onclick="doLogin()">Anmelden</button>
+    </div>
+    <div class="hint" style="text-align:center; margin-top:14px;">
+      <a href="#" onclick="doResetPassword(); return false;">Passwort vergessen?</a> ·
+      <a href="#" onclick="openSettings(); return false;">Einstellungen</a>
+    </div>
   </div>
 </div>
 
@@ -604,6 +627,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 /* ---------- state ---------- */
@@ -792,6 +816,48 @@ function loadSettingsIntoForm(){
   document.getElementById('cfgRkRate').value = localStorage.getItem(LS_RK_RATE) || '0.30';
 }
 
+let listenersStarted = false;
+
+function loginErrorText(e){
+  const c = e && e.code || '';
+  if(c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found')) return 'E-Mail oder Passwort ist falsch.';
+  if(c.includes('invalid-email')) return 'Bitte eine gültige E-Mail eingeben.';
+  if(c.includes('too-many-requests')) return 'Zu viele Versuche. Bitte später erneut probieren.';
+  if(c.includes('operation-not-allowed')) return 'E-Mail-Anmeldung ist in Firebase noch nicht aktiviert.';
+  return 'Anmeldung fehlgeschlagen: ' + (e.message || c);
+}
+async function doLogin(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const pw = document.getElementById('loginPassword').value;
+  const msg = document.getElementById('loginMsg');
+  const btn = document.getElementById('loginBtn');
+  if(!email || !pw){ msg.textContent = 'Bitte E-Mail und Passwort eingeben.'; return; }
+  msg.textContent = '';
+  btn.disabled = true;
+  try{
+    await firebase.auth().signInWithEmailAndPassword(email, pw);
+    document.getElementById('loginPassword').value = '';
+  }catch(e){
+    console.error(e);
+    msg.textContent = loginErrorText(e);
+  }finally{
+    btn.disabled = false;
+  }
+}
+async function doResetPassword(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const msg = document.getElementById('loginMsg');
+  if(!email){ msg.textContent = 'Bitte oben deine E-Mail eingeben, dann erneut „Passwort vergessen?" klicken.'; return; }
+  try{
+    await firebase.auth().sendPasswordResetEmail(email);
+    msg.textContent = 'E-Mail zum Zurücksetzen wurde gesendet.';
+  }catch(e){ msg.textContent = loginErrorText(e); }
+}
+async function doLogout(){
+  try{ await firebase.auth().signOut(); closeSettings(); location.reload(); }
+  catch(e){ showToast('Abmelden fehlgeschlagen: ' + e.message); }
+}
+
 function tryInitFirebase(){
   const cfgRaw = localStorage.getItem(LS_FIREBASE);
   const statusEl = document.getElementById('statusLine');
@@ -809,11 +875,26 @@ function tryInitFirebase(){
     storage = firebase.storage();
     firebaseReady = true;
     document.getElementById('setupBanner').style.display = 'none';
-    statusEl.textContent = 'Verbunden – Änderungen werden geräteübergreifend synchronisiert';
-    statusEl.className = 'status ok';
-    listenToEntries();
-    listenToRkCars();
-    listenToRk();
+    firebase.auth().onAuthStateChanged((user) => {
+      const loginOv = document.getElementById('loginOverlay');
+      if(user){
+        loginOv.classList.remove('open');
+        statusEl.textContent = 'Verbunden als ' + user.email + ' – Änderungen werden geräteübergreifend synchronisiert';
+        statusEl.className = 'status ok';
+        const who = document.getElementById('settingsUser');
+        if(who) who.textContent = 'Angemeldet als ' + user.email;
+        if(!listenersStarted){
+          listenersStarted = true;
+          listenToEntries();
+          listenToRkCars();
+          listenToRk();
+        }
+      } else {
+        loginOv.classList.add('open');
+        statusEl.textContent = 'Nicht angemeldet';
+        statusEl.className = 'status warn';
+      }
+    });
   }catch(e){
     console.error(e);
     statusEl.textContent = 'Verbindungsfehler – prüfe Einstellungen';
